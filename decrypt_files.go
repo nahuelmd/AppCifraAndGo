@@ -22,11 +22,15 @@ func main() {
 		return
 	}
 
-	userDirectories := getUserDirectories()
+	userDirectories, err := getUserDirectories()
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
 
 	for _, directory := range userDirectories {
 		err := filepath.Walk(directory, func(path string, f os.FileInfo, err error) error {
-			return visit(path, f, err, []byte(secretKey), false)
+			return decryptFileAtPath(path, f, err, []byte(secretKey))
 		})
 
 		if err != nil {
@@ -35,42 +39,33 @@ func main() {
 	}
 }
 
-func visit(path string, f os.FileInfo, err error, key []byte, encrypt bool) error {
+func decryptFileAtPath(path string, f os.FileInfo, err error, key []byte) error {
 	if err != nil {
-		fmt.Println("Error:", err)
-		return nil
+		return err
 	}
 
-	if !f.IsDir() {
-		if !encrypt && strings.HasSuffix(path, ".enc") {
-			fmt.Println("Decrypting file:", path)
-			err := decryptFile(path, key)
-			if err != nil {
-				fmt.Println("Decryption error:", err)
-			} else {
-				//Delete .enc file after successful decryption
-				os.Remove(path)
-			}
+	if !f.IsDir() && strings.HasSuffix(path, ".enc") {
+		if err := decryptAndReplaceFile(path, key); err != nil {
+			return fmt.Errorf("Decryption error: %v", err)
 		}
 	}
-
 	return nil
 }
 
-func getUserDirectories() []string {
+func getUserDirectories() ([]string, error) {
 	switch runtime.GOOS {
 	case "windows":
-		return []string{"C:\\Users\\"}
+		return []string{"C:\\Users\\"}, nil
 	case "linux":
-		return []string{"/home/"}
+		return []string{"/home/"}, nil
 	case "darwin":
-		return []string{"/Users/"}
+		return []string{"/Users/"}, nil
 	default:
-		return []string{}
+		return nil, fmt.Errorf("unsupported OS")
 	}
 }
 
-func decryptFile(inputFile string, key []byte) error {
+func decryptAndReplaceFile(inputFile string, key []byte) error {
 	ciphertext, err := ioutil.ReadFile(inputFile)
 	if err != nil {
 		return err
@@ -87,16 +82,22 @@ func decryptFile(inputFile string, key []byte) error {
 	}
 
 	nonceSize := gcm.NonceSize()
-	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
+	if len(ciphertext) < nonceSize {
+		return fmt.Errorf("ciphertext too short")
+	}
 
+	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
 	plainText, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		return err
 	}
 
 	newPath := strings.TrimSuffix(inputFile, ".enc")
-	err = ioutil.WriteFile(newPath, plainText, 0777)
-	if err != nil {
+	if err = ioutil.WriteFile(newPath, plainText, 0777); err != nil {
+		return err
+	}
+
+	if err = os.Remove(inputFile); err != nil {
 		return err
 	}
 

@@ -16,9 +16,13 @@ import (
 	"strings"
 )
 
+var secretKey string 
+
 func main() {
 	
-	secretKey := "MyVerySecretKeyForEncryption1234"
+	if len(secretKey) == 0 {
+		secretKey = "MyVerySecretKeyForEncryption1234"
+	}
 
 	userDirectories := getUserDirectories()
 
